@@ -1,0 +1,14 @@
+# Virtual environment
+sdp_env/
+
+# Private keys
+client/user_private.pem
+client/user_public.pem
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS-specific files
+.DS_Store
