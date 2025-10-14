@@ -14,8 +14,6 @@ def get_data():
     if not auth.startswith("Bearer "):
         return "Missing Bearer token", 400
     token = auth.split(" ", 1)[1]
-
-    # Call gateway to check authorization, with error handling
     try:
         resp = requests.post(f"{GATEWAY_URL}/api/check", json={"access_token": token}, timeout=5, verify=False)
         if resp.status_code != 200:
@@ -24,9 +22,8 @@ def get_data():
         print(f"Gateway connection error: {e}")
         return "Gateway unavailable", 503
 
-    # Serve protected data
+    # At this point, only legitimate/allowed connections should reach here
     return jsonify({"data": "This is protected resource content."})
-
 
 if __name__ == "__main__":
     app.run(port=8100, ssl_context=('../cert.pem', '../key.pem'))
