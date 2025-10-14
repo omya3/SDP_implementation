@@ -72,6 +72,15 @@ def send_signed_challenge(username, signature):
         print("Authenticate error:", e)
         return None
 
+def request_sdp_access(access_token):
+    resp = requests.post(
+        "https://localhost:8090/api/sdp_access",
+        json={"access_token": access_token},
+        verify=False
+    )
+    print("SDP Access Request:", resp.status_code, resp.text)
+    return resp
+
 def access_resource(resource_url, access_token):
     try:
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -96,9 +105,12 @@ if __name__ == "__main__":
                 except Exception:
                     print("Failed to parse access token.")
                 if token:
-                    resource_resp = access_resource("https://localhost:8100", token)
-                    if resource_resp is not None:
-                        print("Final Resource Response:", resource_resp.status_code, resource_resp.text)
+                    # SDP access request step
+                    sdp_resp = request_sdp_access(token)
+                    if sdp_resp is not None and sdp_resp.status_code == 200:
+                        resource_resp = access_resource("https://localhost:8100", token)
+                        if resource_resp is not None:
+                            print("Final Resource Response:", resource_resp.status_code, resource_resp.text)
                 else:
                     print("No token returned.")
             else:
