@@ -6,8 +6,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
-GATEWAY_URL = "https://localhost:8090"
-
 @app.route("/api/data", methods=["GET"])
 def get_data():
     auth = request.headers.get("Authorization", "")
