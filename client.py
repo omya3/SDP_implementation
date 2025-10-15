@@ -1,4 +1,5 @@
 import os
+import time
 
 import requests
 import urllib3
@@ -92,6 +93,8 @@ def access_resource(resource_url, access_token):
         return None
 
 if __name__ == "__main__":
+    # Start latency timer
+    
     gen_keys()
     register_resp = register_key()
     if register_resp is not None and register_resp.status_code in [200, 409]:
@@ -105,12 +108,15 @@ if __name__ == "__main__":
                 except Exception:
                     print("Failed to parse access token.")
                 if token:
+                    start_latency = time.time()
                     # SDP access request step
                     sdp_resp = request_sdp_access(token)
                     if sdp_resp is not None and sdp_resp.status_code == 200:
                         resource_resp = access_resource("https://localhost:8100", token)
+                        end_latency = time.time()
                         if resource_resp is not None:
                             print("Final Resource Response:", resource_resp.status_code, resource_resp.text)
+                            print(f"SDP Connection Latency: {(end_latency - start_latency)*1000:.2f} ms")
                 else:
                     print("No token returned.")
             else:

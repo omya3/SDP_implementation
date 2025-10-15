@@ -12,8 +12,7 @@ app = Flask(__name__)
 CONTROLLER_URL = "https://localhost:8080"
 
 
-
-def open_temporary_port(client_ip, port=8100, timeout=30):
+def open_temporary_port(client_ip, port=8100, timeout=3):
     subprocess.run([
         "iptables", "-I", "INPUT", "1",
         "-p", "tcp", "--dport", str(port), "-s", client_ip, "-j", "ACCEPT"
@@ -38,7 +37,7 @@ def sdp_access():
         return "Not authorized", 403
 
     client_ip = request.remote_addr
-    open_temporary_port(client_ip, port=8100, timeout=30)
+    open_temporary_port(client_ip, port=8100, timeout=3)
     print(f"Firewall opened for {client_ip} port 8100")
     return jsonify({"access": "granted"})
 
