@@ -118,5 +118,5 @@ def verify_token():
 
 
 if __name__ == "__main__":
-    app.run(port=8080, ssl_context=('../cert.pem', '../key.pem'))
+    app.run(port=8080, ssl_context=('cert.pem', 'key.pem'))
 
