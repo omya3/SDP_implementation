@@ -1,127 +1,78 @@
-import os
+import hashlib
+import hmac
+import socket
+import ssl
+import struct
+import sys
 import time
 
 import requests
-import urllib3
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+CONTROLLER_HOST = 'localhost'
+CONTROLLER_PORT = 8080
+GATEWAY_HOST = 'localhost'
+UDP_PORT = 5005
+TLS_PORT = 5006
+SPA_ACK_PORT = 6000
 
-def gen_keys():
-    if os.path.exists("user_private.pem") and os.path.exists("user_public.pem"):
-        print("Keys already exist, skipping generation.")
-        return
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    with open("user_private.pem", "wb") as f:
-        f.write(private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        ))
-    public_key = private_key.public_key()
-    with open("user_public.pem", "wb") as f:
-        f.write(public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ))
-    print("Keys generated.")
+def register(username):
+    resp = requests.post(f'http://{CONTROLLER_HOST}:{CONTROLLER_PORT}/register', json={'username': username}).json()
+    with open('spa_key.bin', 'wb') as f:
+        f.write(bytes.fromhex(resp['spa_key']))
+    with open('service_id.bin', 'wb') as f:
+        f.write(bytes.fromhex(resp['service_id']))
+    with open('certs/client_public.pem', 'w') as f:
+        f.write(resp['cert'])
+    print("Client: Registered and saved keys/certs")
 
-def register_key():
+def send_spa(username):
+    client_id = username[:8].encode().ljust(8, b'\0')
+    nonce = os.urandom(8)
+    timestamp = int(time.time())
+    service_id = open('service_id.bin', 'rb').read()
+    spa_key = open('spa_key.bin', 'rb').read()
+    msg = client_id + nonce + struct.pack(">I", timestamp) + service_id
+    hmac_val = hmac.new(spa_key, msg, hashlib.sha256).digest()
+    packet = msg + hmac_val
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(packet, (GATEWAY_HOST, UDP_PORT))
+    print("Client: Sent SPA packet")
+
+def wait_for_spa_ack():
+    ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ack_sock.bind(('0.0.0.0', SPA_ACK_PORT))
+    ack_sock.settimeout(10)
     try:
-        if not os.path.exists("user_public.pem"):
-            print("Public key not found. Generate keys first.")
+        data, _ = ack_sock.recvfrom(1024)
+        msg = data.decode()
+        if msg.startswith('SPA_ACCEPTED:'):
+            return msg.split(':', 1)[1]
+        else:
+            print("Client: SPA rejected or unknown response")
             return None
-        with open("user_public.pem") as f:
-            pubkey = f.read()
-        resp = requests.post("https://localhost:8080/api/register", json={"username": "alice", "public_key": pubkey}, verify=False)
-        print("Register:", resp.status_code, resp.text)
-        return resp
-    except Exception as e:
-        print("Registration error:", e)
+    except socket.timeout:
+        print("Client: Timeout waiting for SPA_ACK")
         return None
 
-def get_and_sign_challenge(username, private_key_path):
-    try:
-        r = requests.get(f"https://localhost:8080/api/get_challenge?username={username}", verify=False)
-        if r.status_code != 200:
-            print("Challenge request failed:", r.status_code, r.text)
-            return None, None
-        challenge = r.json()["challenge"]
-        with open(private_key_path, "rb") as f:
-            priv = serialization.load_pem_private_key(f.read(), password=None)
-        signature = priv.sign(
-            challenge.encode(),
-            padding.PKCS1v15(),
-            hashes.SHA256()
-        )
-        return challenge, signature
-    except Exception as e:
-        print("Challenge/sign error:", e)
-        return None, None
-
-def send_signed_challenge(username, signature):
-    try:
-        resp = requests.post(
-            "https://localhost:8080/api/authenticate",
-            json={"username": username, "signature": signature.hex()}, 
-            verify=False
-        )
-        print("Authenticate:", resp.status_code, resp.text)
-        return resp
-    except Exception as e:
-        print("Authenticate error:", e)
-        return None
-
-def request_sdp_access(access_token):
-    resp = requests.post(
-        "https://localhost:8090/api/sdp_access",
-        json={"access_token": access_token},
-        verify=False
-    )
-    print("SDP Access Request:", resp.status_code, resp.text)
-    return resp
-
-def access_resource(resource_url, access_token):
-    try:
-        headers = {"Authorization": f"Bearer {access_token}"}
-        resp = requests.get(f"{resource_url}/api/data", headers=headers, verify=False)
-        print("Resource access:", resp.status_code, resp.text)
-        return resp
-    except Exception as e:
-        print("Resource access error:", e)
-        return None
+def access_service_latency(username):
+    send_spa(username)
+    session_id = wait_for_spa_ack()
+    print("Session ID received:", session_id)
+    if session_id:
+        start = time.time()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssl_sock = ssl.wrap_socket(s)
+        ssl_sock.connect((GATEWAY_HOST, TLS_PORT))
+        ssl_sock.send(b'GET /service')
+        resp = ssl_sock.recv(1024)
+        end = time.time()
+        ssl_sock.close()
+        print("Service response:", resp)
+        print(f"SDP Service Access Latency: {end-start:.3f} seconds")
 
 if __name__ == "__main__":
-    # Start latency timer
-    
-    gen_keys()
-    register_resp = register_key()
-    if register_resp is not None and register_resp.status_code in [200, 409]:
-        challenge, signature = get_and_sign_challenge("alice", "user_private.pem")
-        if challenge and signature:
-            resp = send_signed_challenge("alice", signature)
-            if resp is not None and resp.status_code == 200:
-                token = None
-                try:
-                    token = resp.json().get("access_token")
-                except Exception:
-                    print("Failed to parse access token.")
-                if token:
-                    start_latency = time.time()
-                    # SDP access request step
-                    sdp_resp = request_sdp_access(token)
-                    if sdp_resp is not None and sdp_resp.status_code == 200:
-                        resource_resp = access_resource("https://localhost:8100", token)
-                        end_latency = time.time()
-                        if resource_resp is not None:
-                            print("Final Resource Response:", resource_resp.status_code, resource_resp.text)
-                            print(f"SDP Connection Latency: {(end_latency - start_latency)*1000:.2f} ms")
-                else:
-                    print("No token returned.")
-            else:
-                print("Authentication failed:", resp.text if resp else "No response")
-        else:
-            print("Challenge/signing failed.")
+    username = 'aliceIH'
+    if len(sys.argv) > 1 and sys.argv[1] == "register":
+        register(username)
     else:
-        print("User registration failed or request error.")
+        access_service_latency(username)

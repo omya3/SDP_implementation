@@ -1,14 +1,39 @@
-# Virtual environment
+# Virtual environments
 sdp_env/
+venv/
+.env
 
-# Private keys
+# Private keys and certs
+**/*_private.pem
 client/user_private.pem
-client/user_public.pem
+key.pem
+cert.pem
+certs/
+# If you keep public keys in repo, don't ignore them; otherwise:
+# client/user_public.pem
 
-# Python cache
+# Binary secrets
+service_id.bin
+spa_key.bin
+*.bin
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
+*.pyd
 
-# OS-specific files
+# Testing / tools
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Editor / OS files
+.vscode/
 .DS_Store
+*.swp
