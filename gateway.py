@@ -60,7 +60,7 @@ def start_tls_session(session_id, valid_until):
     while True:
         client_sock, addr = server_sock.accept()
         start_time = time.time()
-        ssl_sock = ssl.wrap_socket(client_sock, server_side=True, certfile="certs/aliceIH_public.pem", keyfile="certs/aliceIH_private.pem")
+        ssl_sock = ssl.wrap_socket(client_sock, server_side=True, certfile="certs/server.crt", keyfile="certs/server.key")
         print("Accepted mTLS connection from", addr)
         while time.time() < valid_until:
             try:
