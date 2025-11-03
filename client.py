@@ -111,7 +111,12 @@ def access_service_latency(username):
         return
     print(f"[CLIENT] Session ID received: {session_id}, connecting to port: {tls_port}")
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    context = ssl._create_unverified_context()
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile="ca_cert.pem")
+    # Per-user client cert and key (mTLS)
+    certfile = f"certs/{username}_cert.pem"
+    keyfile = f"certs/{username}_private.pem"
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
     ssl_sock = context.wrap_socket(s, server_hostname=GATEWAY_HOST)
     ssl_sock.connect((GATEWAY_HOST, tls_port))
     req = b"GET /api/data HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -138,7 +143,8 @@ def access_service_latency(username):
     ssl_sock.close()
     if latencies:
         print(f"[CLIENT] Average latency: {sum(latencies)/len(latencies):.2f} ms over {len(latencies)} requests")
-        print(f"[CLIENT] All per-request latencies written to latency_samples.csv")
+        print(f"[CLIENT] All per-request latencies written to latency_samples.csv") 
+
 
 if __name__ == "__main__":
     username = 'aliceIH'

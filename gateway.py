@@ -51,9 +51,9 @@ def periodic_refresh():
 
 def tcp_forward(client_sock, resource_host, resource_port, valid_until):
     try:
-        context = ssl._create_unverified_context()
-        raw_sock = socket.create_connection((resource_host, resource_port))
-        backend_sock = context.wrap_socket(raw_sock, server_hostname=resource_host)
+        # Plain HTTP: connect directly, do NOT wrap in SSL
+        backend_sock = socket.create_connection((resource_host, resource_port))
+
         def tunnel(source, dest):
             try:
                 while True:
@@ -64,42 +64,37 @@ def tcp_forward(client_sock, resource_host, resource_port, valid_until):
             except Exception:
                 pass
             finally:
-                try:
-                    source.shutdown(socket.SHUT_RDWR)
-                except Exception:
-                    pass
-                try:
-                    dest.shutdown(socket.SHUT_RDWR)
-                except Exception:
-                    pass
+                try: source.shutdown(socket.SHUT_RDWR)
+                except Exception: pass
+                try: dest.shutdown(socket.SHUT_RDWR)
+                except Exception: pass
                 source.close()
                 dest.close()
 
-        # Strict session killer: forcibly close after SESSION_TIMEOUT/valid_until
         def session_timeout_killer():
             time.sleep(max(0, valid_until - time.time()))
             print("Proxy: Closing sockets due to session timeout")
-            try:
-                client_sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            try:
-                backend_sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
+            try: client_sock.shutdown(socket.SHUT_RDWR)
+            except Exception: pass
+            try: backend_sock.shutdown(socket.SHUT_RDWR)
+            except Exception: pass
             client_sock.close()
             backend_sock.close()
 
         threading.Thread(target=tunnel, args=(client_sock, backend_sock), daemon=True).start()
         threading.Thread(target=tunnel, args=(backend_sock, client_sock), daemon=True).start()
         threading.Thread(target=session_timeout_killer, daemon=True).start()
+
     except Exception as e:
         print("TCP Proxy error:", e)
         client_sock.close()
 
+
 def start_tls_proxy_server(session_id, valid_until, port_ready_event, port_holder):
     gw_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     gw_context.load_cert_chain('gw_cert.pem', 'gw_key.pem')
+    gw_context.load_verify_locations(cafile='ca_cert.pem')
+    gw_context.verify_mode = ssl.CERT_REQUIRED
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((SERVER_HOST, 0))
