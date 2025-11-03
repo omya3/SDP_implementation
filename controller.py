@@ -9,7 +9,20 @@ from flask import Flask, jsonify, request
 app = Flask(__name__)
 if not os.path.exists('certs'):
     os.makedirs('certs')
+
+USERS_FILE = "users.json"
 USERS = {} # username: {spa_key, service_id, cert}
+
+def save_users():
+    with open(USERS_FILE, "w") as f:
+        # Only serialize standard fields; certs are ASCII PEM so are safe
+        json.dump(USERS, f)
+
+def load_users():
+    global USERS
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE) as f:
+            USERS = json.load(f)
 
 def generate_keys_cert(username):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -27,6 +40,9 @@ def generate_keys_cert(username):
     with open(f'certs/{username}_public.pem', 'wb') as f: f.write(pub_bytes)
     return priv_bytes, pub_bytes
 
+# Load persistent users at boot
+load_users()
+
 @app.route('/register', methods=['POST'])
 def register():
     username = request.json['username']
@@ -38,6 +54,7 @@ def register():
         'service_id': service_id.hex(),
         'cert': pub_bytes.decode()
     }
+    save_users()
     print(f'Registered: {username}')
     return jsonify({
         'spa_key': spa_key.hex(),
@@ -47,9 +64,7 @@ def register():
 
 @app.route('/api/authorized_spa_keys', methods=['GET'])
 def get_authorized_spa_keys():
-    # Provide all authorized IH SPA keys (can add access checks in real deployment)
-    # Returns: {username: spa_key, ...}
     return jsonify({user: USERS[user]['spa_key'] for user in USERS})
 
 if __name__ == "__main__":
-    app.run(port=8080, debug=True)
+    app.run(port=8080, debug=True)  # For production, use debug=False
