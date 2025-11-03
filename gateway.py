@@ -7,11 +7,11 @@ import subprocess
 import threading
 import time
 import requests
+import ssl
 
 SERVER_HOST = '0.0.0.0'
 UDP_PORT = 5005
 SPA_ACK_PORT = 6000
-TLS_PORT = 5006
 RESOURCE_HOST = 'localhost'
 RESOURCE_PORT = 8100
 SESSION_TIMEOUT = 60
@@ -24,7 +24,7 @@ def open_firewall_port(client_ip, port):
         "sudo", "iptables", "-I", "INPUT", "-p", "tcp", "--dport", str(port),
         "-s", client_ip, "-j", "ACCEPT"
     ]
-    print("Opening firewall port for", client_ip)
+    print("Opening firewall port for", client_ip, "on", port)
     subprocess.run(cmd, check=True)
 
 def close_firewall_port(client_ip, port):
@@ -32,7 +32,7 @@ def close_firewall_port(client_ip, port):
         "sudo", "iptables", "-D", "INPUT", "-p", "tcp", "--dport", str(port),
         "-s", client_ip, "-j", "ACCEPT"
     ]
-    print("Closing firewall port for", client_ip)
+    print("Closing firewall port for", client_ip, "on", port)
     subprocess.run(cmd, check=True)
 
 def fetch_authorized_spa_keys():
@@ -49,9 +49,11 @@ def periodic_refresh():
         fetch_authorized_spa_keys()
         time.sleep(3)
 
-def tcp_forward(client_sock, resource_host, resource_port):
+def tcp_forward(client_sock, resource_host, resource_port, valid_until):
     try:
-        backend_sock = socket.create_connection((resource_host, resource_port))
+        context = ssl._create_unverified_context()
+        raw_sock = socket.create_connection((resource_host, resource_port))
+        backend_sock = context.wrap_socket(raw_sock, server_hostname=resource_host)
         def tunnel(source, dest):
             try:
                 while True:
@@ -62,27 +64,60 @@ def tcp_forward(client_sock, resource_host, resource_port):
             except Exception:
                 pass
             finally:
+                try:
+                    source.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                try:
+                    dest.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 source.close()
                 dest.close()
+
+        # Strict session killer: forcibly close after SESSION_TIMEOUT/valid_until
+        def session_timeout_killer():
+            time.sleep(max(0, valid_until - time.time()))
+            print("Proxy: Closing sockets due to session timeout")
+            try:
+                client_sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                backend_sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            client_sock.close()
+            backend_sock.close()
+
         threading.Thread(target=tunnel, args=(client_sock, backend_sock), daemon=True).start()
         threading.Thread(target=tunnel, args=(backend_sock, client_sock), daemon=True).start()
+        threading.Thread(target=session_timeout_killer, daemon=True).start()
     except Exception as e:
         print("TCP Proxy error:", e)
         client_sock.close()
 
-def start_tls_proxy_server(session_id, valid_until):
+def start_tls_proxy_server(session_id, valid_until, port_ready_event, port_holder):
+    gw_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    gw_context.load_cert_chain('gw_cert.pem', 'gw_key.pem')
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_sock.bind((SERVER_HOST, TLS_PORT))
+    server_sock.bind((SERVER_HOST, 0))
+    _, tls_port = server_sock.getsockname()
+    port_holder['port'] = tls_port
+    port_ready_event.set()
     server_sock.listen(1)
-    print(f"Gateway proxy listening for session {session_id}")
+    print(f"Gateway proxy for session {session_id} on port {tls_port}")
     accept_deadline = valid_until
     while time.time() < accept_deadline:
         try:
+            server_sock.settimeout(accept_deadline - time.time())
             client_sock, addr = server_sock.accept()
+            ssl_client_sock = gw_context.wrap_socket(client_sock, server_side=True)
             print(f"Proxy: Accepted for session {session_id} from {addr}")
-            # spawn proxy for this connection to the backend resource
-            threading.Thread(target=tcp_forward, args=(client_sock, RESOURCE_HOST, RESOURCE_PORT), daemon=True).start()
+            threading.Thread(target=tcp_forward, args=(ssl_client_sock, RESOURCE_HOST, RESOURCE_PORT, valid_until), daemon=True).start()
+        except socket.timeout:
+            break
         except Exception as e:
             print("TCP proxy accept error:", e)
             continue
@@ -118,7 +153,6 @@ def spa_listener():
             service_id = data[id_len+12:id_len+28]
             hmac_recv = data[id_len+28:]
             msg = data[:id_len+28]
-
             print(f"client_id='{client_id}', length={id_len}, nonce(hex)={nonce.hex()}, timestamp={timestamp}, service_id(hex)={service_id.hex()}")
             print("spa_key(hex):", spa_key.hex())
             print("hmac_recv(hex):", hmac_recv.hex())
@@ -128,14 +162,18 @@ def spa_listener():
             if hmac_val == hmac_recv and abs(now - timestamp) < SESSION_TIMEOUT:
                 session_id = secrets.token_hex(8)
                 valid_until = now + SESSION_TIMEOUT
-                print(f"\033[92m[ACCEPT] Valid SPA from {client_ip} (username: {client_id}), session {session_id}\033[0m")
-                print(f"Sending SPA_ACCEPTED to {client_ip}:{SPA_ACK_PORT}")
-                open_firewall_port(client_ip, TLS_PORT)
-                threading.Thread(target=start_tls_proxy_server, args=(session_id, valid_until), daemon=True).start()
-                threading.Timer(SESSION_TIMEOUT, close_firewall_port, args=[client_ip, TLS_PORT]).start()
+                port_ready_event = threading.Event()
+                port_holder = {}
+                t = threading.Thread(target=start_tls_proxy_server, args=(session_id, valid_until, port_ready_event, port_holder), daemon=True)
+                t.start()
+                port_ready_event.wait()
+                tls_port = port_holder['port']
+                open_firewall_port(client_ip, tls_port)
+                threading.Timer(SESSION_TIMEOUT, close_firewall_port, args=[client_ip, tls_port]).start()
                 ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                ack_sock.sendto(f'SPA_ACCEPTED:{session_id}'.encode(), (client_ip, SPA_ACK_PORT))
+                ack_sock.sendto(f'SPA_ACCEPTED:{session_id}:{tls_port}'.encode(), (client_ip, SPA_ACK_PORT))
                 ack_sock.close()
+                print(f"\033[92m[ACCEPT] Valid SPA from {client_ip} (username: {client_id}), session {session_id}, port {tls_port}\033[0m")
             else:
                 print(f"\033[91m[REJECT] Invalid SPA: hmac or timestamp invalid\033[0m")
                 if hmac_val != hmac_recv:
@@ -145,8 +183,8 @@ def spa_listener():
         except Exception as ex:
             print(f"\033[91mSPA parse error:\033[0m", ex)
 
-
 if __name__ == "__main__":
     fetch_authorized_spa_keys()
     threading.Thread(target=periodic_refresh, daemon=True).start()
     spa_listener()
+    

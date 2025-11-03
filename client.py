@@ -7,12 +7,12 @@ import sys
 import time
 import os
 import requests
+import csv
 
 CONTROLLER_HOST = 'localhost'
 CONTROLLER_PORT = 8080
 GATEWAY_HOST = 'localhost'
 UDP_PORT = 5005
-TLS_PORT = 5006
 SPA_ACK_PORT = 6000
 
 def register(username):
@@ -77,7 +77,7 @@ def wait_for_spa_ack():
         ack_sock.bind(('0.0.0.0', SPA_ACK_PORT))
     except Exception as e:
         print(f"[CLIENT] Failed to bind UDP port {SPA_ACK_PORT} for ACK:", e)
-        return None
+        return None, None
     ack_sock.settimeout(10)
     print(f"[CLIENT] Listening for SPA_ACK on UDP {SPA_ACK_PORT} ...")
     try:
@@ -85,37 +85,60 @@ def wait_for_spa_ack():
         msg = data.decode(errors="ignore")
         print(f"[CLIENT] Received {len(data)} bytes from {addr}: {msg}")
         if msg.startswith('SPA_ACCEPTED:'):
-            return msg.split(':', 1)[1]
+            fields = msg.split(':')
+            if len(fields) == 3:
+                return fields[1], int(fields[2])  # session_id, tls_port
+            else:
+                return fields[1], None
         else:
             print("[CLIENT] SPA rejected or unknown response")
-            return None
+            return None, None
     except socket.timeout:
         print("[CLIENT] Timeout waiting for SPA_ACK (no packet received).")
-        return None
+        return None, None
     finally:
         ack_sock.close()
 
 def access_service_latency(username):
+    SESSION_TIMEOUT = 60  # Sync with gateway setting
     if not wait_until_key_synced(username):
         print("[CLIENT] SPA key not present in gateway – aborting test.")
         return
     send_spa(username)
-    session_id = wait_for_spa_ack()
-    print(f"[CLIENT] Session ID received: {session_id}")
-    if session_id:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ssl_sock = ssl.wrap_socket(s)
-        ssl_sock.connect((GATEWAY_HOST, TLS_PORT))
-        req = b"GET /api/data HTTP/1.1\r\nHost: localhost\r\n\r\n"
-        print("[CLIENT] Sending HTTP GET /api/data to gateway proxy...")
-        start = time.time()
-        ssl_sock.send(req)
-        resp = ssl_sock.recv(1024)
-        end = time.time()
-        ssl_sock.close()
-        print("[CLIENT] Service response:")
-        print(resp.decode(errors="ignore"))
-        print(f"[CLIENT] SDP Service Access Latency: {end-start:.3f} seconds")
+    session_id, tls_port = wait_for_spa_ack()
+    if tls_port is None:
+        print("[CLIENT] No port indicated in SPA_ACK. Aborting.")
+        return
+    print(f"[CLIENT] Session ID received: {session_id}, connecting to port: {tls_port}")
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    context = ssl._create_unverified_context()
+    ssl_sock = context.wrap_socket(s, server_hostname=GATEWAY_HOST)
+    ssl_sock.connect((GATEWAY_HOST, tls_port))
+    req = b"GET /api/data HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    print(f"[CLIENT] Sending as many requests as possible during SPA session (timeout {SESSION_TIMEOUT}s)...")
+    latencies = []
+    count = 0
+    with open("latency_samples.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["request_num", "latency_ms"])
+        try:
+            while True:
+                start = time.time()
+                ssl_sock.send(req)
+                resp = ssl_sock.recv(4096)
+                end = time.time()
+                ms = (end - start) * 1000
+                latencies.append(ms)
+                count += 1
+                print(f"[CLIENT] Request {count} latency: {ms:.2f} ms")
+                writer.writerow([count, ms])
+                time.sleep(0.01)
+        except Exception as e:
+            print("[CLIENT] Connection closed or error after", count, "requests:", e)
+    ssl_sock.close()
+    if latencies:
+        print(f"[CLIENT] Average latency: {sum(latencies)/len(latencies):.2f} ms over {len(latencies)} requests")
+        print(f"[CLIENT] All per-request latencies written to latency_samples.csv")
 
 if __name__ == "__main__":
     username = 'aliceIH'
