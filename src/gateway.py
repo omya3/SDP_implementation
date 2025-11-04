@@ -8,6 +8,11 @@ import threading
 import time
 import requests
 import ssl
+import os
+
+# --- Directory Structure Awareness ---
+base_dir = os.path.dirname(os.path.abspath(__file__))
+certs_dir = os.path.join(base_dir, '../certs')
 
 SERVER_HOST = '0.0.0.0'
 UDP_PORT = 5005
@@ -89,11 +94,10 @@ def tcp_forward(client_sock, resource_host, resource_port, valid_until):
         print("TCP Proxy error:", e)
         client_sock.close()
 
-
 def start_tls_proxy_server(session_id, valid_until, port_ready_event, port_holder):
     gw_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    gw_context.load_cert_chain('gw_cert.pem', 'gw_key.pem')
-    gw_context.load_verify_locations(cafile='ca_cert.pem')
+    gw_context.load_cert_chain(os.path.join(certs_dir, 'gw_cert.pem'), os.path.join(certs_dir, 'gw_key.pem'))
+    gw_context.load_verify_locations(cafile=os.path.join(certs_dir, 'ca_cert.pem'))
     gw_context.verify_mode = ssl.CERT_REQUIRED
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -182,4 +186,3 @@ if __name__ == "__main__":
     fetch_authorized_spa_keys()
     threading.Thread(target=periodic_refresh, daemon=True).start()
     spa_listener()
-    

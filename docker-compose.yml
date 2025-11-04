@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.controller
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./certs:/app/certs
+      - ./configs:/app/configs
+    restart: always
+
+  resource:
+    build:
+      context: .
+      dockerfile: Dockerfile.resource
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./certs:/app/certs
+    restart: always
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "5005:5005/udp"
+      - "6000:6000/udp"
+      - "39621-49999:39621-49999"
+    privileged: true
+    volumes:
+      - ./certs:/app/certs
+      - ./configs:/app/configs
+    restart: always
+    depends_on:
+      - controller
+      - resource
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    volumes:
+      - ./certs:/app/certs
+      - ./data:/app/data
+      - ./configs:/app/configs
+    depends_on:
+      - gateway
+      - resource
+      - controller
+    entrypoint: ["python3", "client.py"]
+    restart: "no"

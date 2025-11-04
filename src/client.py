@@ -9,6 +9,15 @@ import os
 import requests
 import csv
 
+# --- Directory Structure Awareness ---
+base_dir = os.path.dirname(os.path.abspath(__file__))
+certs_dir = os.path.join(base_dir, '../certs')
+data_dir = os.path.join(base_dir, '../data')
+
+for d in [certs_dir, data_dir]:
+    if not os.path.exists(d):
+        os.makedirs(d)
+
 CONTROLLER_HOST = 'localhost'
 CONTROLLER_PORT = 8080
 GATEWAY_HOST = 'localhost'
@@ -19,13 +28,11 @@ def register(username):
     resp = requests.post(
         f'http://{CONTROLLER_HOST}:{CONTROLLER_PORT}/register',
         json={'username': username}).json()
-    if not os.path.exists('certs'):
-        os.makedirs('certs')
-    with open('spa_key.bin', 'wb') as f:
+    with open(os.path.join(data_dir, 'spa_key.bin'), 'wb') as f:
         f.write(bytes.fromhex(resp['spa_key']))
-    with open('service_id.bin', 'wb') as f:
+    with open(os.path.join(data_dir, 'service_id.bin'), 'wb') as f:
         f.write(bytes.fromhex(resp['service_id']))
-    with open('certs/client_public.pem', 'w') as f:
+    with open(os.path.join(certs_dir, 'client_public.pem'), 'w') as f:
         f.write(resp['cert'])
     print("[CLIENT] Registered and saved keys/certs for username:", username)
     print("[CLIENT] SPA Key (hex):", resp['spa_key'])
@@ -52,8 +59,8 @@ def send_spa(username):
     client_id = username.encode()
     nonce = os.urandom(8)
     timestamp = int(time.time())
-    service_id = open('service_id.bin', 'rb').read()
-    spa_key = open('spa_key.bin', 'rb').read()
+    service_id = open(os.path.join(data_dir, 'service_id.bin'), 'rb').read()
+    spa_key = open(os.path.join(data_dir, 'spa_key.bin'), 'rb').read()
     msg = client_id + nonce + struct.pack(">I", timestamp) + service_id
     hmac_val = hmac.new(spa_key, msg, hashlib.sha256).digest()
     packet = msg + hmac_val
@@ -112,10 +119,9 @@ def access_service_latency(username):
     print(f"[CLIENT] Session ID received: {session_id}, connecting to port: {tls_port}")
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     context = ssl.create_default_context()
-    context.load_verify_locations(cafile="ca_cert.pem")
-    # Per-user client cert and key (mTLS)
-    certfile = f"certs/{username}_cert.pem"
-    keyfile = f"certs/{username}_private.pem"
+    context.load_verify_locations(cafile=os.path.join(certs_dir, "ca_cert.pem"))
+    certfile = os.path.join(certs_dir, f"{username}_cert.pem")
+    keyfile = os.path.join(certs_dir, f"{username}_private.pem")
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
     ssl_sock = context.wrap_socket(s, server_hostname=GATEWAY_HOST)
     ssl_sock.connect((GATEWAY_HOST, tls_port))
@@ -123,7 +129,7 @@ def access_service_latency(username):
     print(f"[CLIENT] Sending as many requests as possible during SPA session (timeout {SESSION_TIMEOUT}s)...")
     latencies = []
     count = 0
-    with open("latency_samples.csv", "w", newline="") as f:
+    with open(os.path.join(data_dir, "latency_samples.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["request_num", "latency_ms"])
         try:
@@ -143,8 +149,7 @@ def access_service_latency(username):
     ssl_sock.close()
     if latencies:
         print(f"[CLIENT] Average latency: {sum(latencies)/len(latencies):.2f} ms over {len(latencies)} requests")
-        print(f"[CLIENT] All per-request latencies written to latency_samples.csv") 
-
+        print(f"[CLIENT] All per-request latencies written to latency_samples.csv")
 
 if __name__ == "__main__":
     username = 'aliceIH'

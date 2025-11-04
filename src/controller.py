@@ -6,16 +6,20 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from flask import Flask, jsonify, request
 
-app = Flask(__name__)
-if not os.path.exists('certs'):
-    os.makedirs('certs')
+# --- Directory Structure Awareness ---
+base_dir = os.path.dirname(os.path.abspath(__file__))
+certs_dir = os.path.join(base_dir, '../certs')
+configs_dir = os.path.join(base_dir, '../configs')
 
-USERS_FILE = "users.json"
+for d in [certs_dir, configs_dir]:
+    if not os.path.exists(d):
+        os.makedirs(d)
+
+USERS_FILE = os.path.join(configs_dir, "users.json")
 USERS = {} # username: {spa_key, service_id, cert}
 
 def save_users():
     with open(USERS_FILE, "w") as f:
-        # Only serialize standard fields; certs are ASCII PEM so are safe
         json.dump(USERS, f)
 
 def load_users():
@@ -36,12 +40,16 @@ def generate_keys_cert(username):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
-    with open(f'certs/{username}_private.pem', 'wb') as f: f.write(priv_bytes)
-    with open(f'certs/{username}_public.pem', 'wb') as f: f.write(pub_bytes)
+    with open(os.path.join(certs_dir, f'{username}_private.pem'), 'wb') as f:
+        f.write(priv_bytes)
+    with open(os.path.join(certs_dir, f'{username}_public.pem'), 'wb') as f:
+        f.write(pub_bytes)
     return priv_bytes, pub_bytes
 
 # Load persistent users at boot
 load_users()
+
+app = Flask(__name__)
 
 @app.route('/register', methods=['POST'])
 def register():

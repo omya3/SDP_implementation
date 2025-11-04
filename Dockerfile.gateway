@@ -1,0 +1,23 @@
+# Dockerfile.gateway
+
+FROM python:3.10-slim
+WORKDIR /app
+
+# Copy gateway code
+COPY src/gateway.py .
+
+# Copy requirements and cert/config directories as needed
+COPY configs/requirements.txt ./configs/requirements.txt
+COPY certs/ certs/
+COPY configs/ configs/
+
+# Install dependencies (socket, ssl, requests, cryptography, etc)
+RUN pip install --no-cache-dir -r ./configs/requirements.txt
+
+# Expose relevant ports (SPA, proxy, etc)
+EXPOSE 5005/udp
+EXPOSE 6000/udp
+EXPOSE 39621-49999
+
+# Run the gateway (iptables: need privileged flag in docker-compose.yml)
+CMD ["python3", "gateway.py"]
