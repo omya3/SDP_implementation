@@ -1,78 +1,88 @@
 import json
 import os
 import secrets
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+import logging
 from flask import Flask, jsonify, request
 
-# --- Directory Structure Awareness ---
-base_dir = os.path.dirname(os.path.abspath(__file__))
-certs_dir = os.path.join(base_dir, '../certs')
-configs_dir = os.path.join(base_dir, '../configs')
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [CONTROLLER] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
-for d in [certs_dir, configs_dir]:
-    if not os.path.exists(d):
-        os.makedirs(d)
+configs_dir = "/app/configs"
+if not os.path.exists(configs_dir):
+    os.makedirs(configs_dir)
 
 USERS_FILE = os.path.join(configs_dir, "users.json")
-USERS = {} # username: {spa_key, service_id, cert}
+USERS = {}
 
 def save_users():
-    with open(USERS_FILE, "w") as f:
-        json.dump(USERS, f)
+    try:
+        with open(USERS_FILE, "w") as f:
+            json.dump(USERS, f)
+    except Exception as e:
+        logger.error(f"Failed to save users: {e}")
 
 def load_users():
     global USERS
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE) as f:
-            USERS = json.load(f)
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE) as f:
+                USERS = json.load(f)
+                logger.info(f"Loaded {len(USERS)} users from {USERS_FILE}")
+        else:
+            USERS = {}
+            logger.info("No existing users file found")
+    except Exception as e:
+        logger.error(f"Failed to load users: {e}")
+        USERS = {}
 
-def generate_keys_cert(username):
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public_key = private_key.public_key()
-    priv_bytes = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    pub_bytes = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    with open(os.path.join(certs_dir, f'{username}_private.pem'), 'wb') as f:
-        f.write(priv_bytes)
-    with open(os.path.join(certs_dir, f'{username}_public.pem'), 'wb') as f:
-        f.write(pub_bytes)
-    return priv_bytes, pub_bytes
-
-# Load persistent users at boot
 load_users()
-
 app = Flask(__name__)
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint for Kubernetes liveness probe"""
+    return jsonify({"status": "ok"}), 200
 
 @app.route('/register', methods=['POST'])
 def register():
-    username = request.json['username']
-    spa_key = secrets.token_bytes(32)
-    service_id = secrets.token_bytes(16)
-    priv_bytes, pub_bytes = generate_keys_cert(username)
-    USERS[username] = {
-        'spa_key': spa_key.hex(),
-        'service_id': service_id.hex(),
-        'cert': pub_bytes.decode()
-    }
-    save_users()
-    print(f'Registered: {username}')
-    return jsonify({
-        'spa_key': spa_key.hex(),
-        'service_id': service_id.hex(),
-        'cert': pub_bytes.decode()
-    })
+    """Register a new user and generate SPA credentials"""
+    try:
+        username = request.json['username']
+        spa_key = secrets.token_bytes(32)
+        service_id = secrets.token_bytes(16)
+        user_cert = "STUB_CERT_" + username
+
+        USERS[username] = {
+            'spa_key': spa_key.hex(),
+            'service_id': service_id.hex(),
+            'cert': user_cert
+        }
+        save_users()
+        logger.info(f'Registered user: {username}')
+        
+        return jsonify({
+            'spa_key': spa_key.hex(),
+            'service_id': service_id.hex(),
+            'cert': user_cert
+        }), 200
+    except Exception as e:
+        logger.error(f"Registration failed: {e}")
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/api/authorized_spa_keys', methods=['GET'])
 def get_authorized_spa_keys():
-    return jsonify({user: USERS[user]['spa_key'] for user in USERS})
+    """Fetch all authorized SPA keys for gateway"""
+    try:
+        return jsonify({user: USERS[user]['spa_key'] for user in USERS}), 200
+    except Exception as e:
+        logger.error(f"Failed to fetch SPA keys: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(port=8080, debug=True)  # For production, use debug=False
+    logger.info("Starting Controller on HTTPS (adhoc self-signed cert, unverified)")
+    app.run(host="0.0.0.0", port=8080, debug=False, ssl_context='adhoc')

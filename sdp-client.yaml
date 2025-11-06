@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdp-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdp-client
+  template:
+    metadata:
+      labels:
+        app: sdp-client
+    spec:
+      containers:
+      - name: client
+        image: sdp-client:latest
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: client-data
+          mountPath: /app/data
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            cpu: "0.2"
+            memory: "128Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+      volumes:
+      - name: client-data
+        emptyDir: {}
+      restartPolicy: Always

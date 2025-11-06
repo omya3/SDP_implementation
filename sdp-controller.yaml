@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdp-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdp-controller
+  template:
+    metadata:
+      labels:
+        app: sdp-controller
+    spec:
+      containers:
+      - name: controller
+        image: sdp-controller:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: configs
+          mountPath: /app/configs
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            cpu: "0.1"
+            memory: "64Mi"
+          limits:
+            cpu: "0.5"
+            memory: "256Mi"
+      volumes:
+      - name: configs
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdp-controller
+spec:
+  selector:
+    app: sdp-controller
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP

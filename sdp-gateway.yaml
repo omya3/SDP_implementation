@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdp-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdp-gateway
+  template:
+    metadata:
+      labels:
+        app: sdp-gateway
+    spec:
+      containers:
+      - name: gateway
+        image: sdp-gateway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5005
+          protocol: UDP
+        - containerPort: 6000
+          protocol: UDP
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            cpu: "0.3"
+            memory: "128Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdp-gateway
+spec:
+  selector:
+    app: sdp-gateway
+  ports:
+  - name: spa
+    protocol: UDP
+    port: 5005
+    targetPort: 5005
+  - name: ack
+    protocol: UDP
+    port: 6000
+    targetPort: 6000
+  type: ClusterIP

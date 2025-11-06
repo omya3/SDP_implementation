@@ -1,23 +1,23 @@
-# Dockerfile.gateway
-
 FROM python:3.10-slim
+
+# Install openssl for runtime cert generation
+RUN apt-get update && apt-get install -y openssl iptables && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Copy gateway code
-COPY src/gateway.py .
+# Copy gateway code and cert generator
+COPY src/gateway.py ./gateway.py
+COPY src/generate_cert.py ./generate_cert.py
+COPY src/entrypoint.sh ./entrypoint.sh
 
-# Copy requirements and cert/config directories as needed
-COPY configs/requirements.txt ./configs/requirements.txt
-COPY certs/ certs/
-COPY configs/ configs/
 
-# Install dependencies (socket, ssl, requests, cryptography, etc)
-RUN pip install --no-cache-dir -r ./configs/requirements.txt
+RUN pip install --no-cache-dir flask requests cryptography urllib3
 
-# Expose relevant ports (SPA, proxy, etc)
+# Ensure entrypoint script is executable
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 5005/udp
 EXPOSE 6000/udp
-EXPOSE 39621-49999
 
-# Run the gateway (iptables: need privileged flag in docker-compose.yml)
-CMD ["python3", "gateway.py"]
+# Entrypoint: generates cert for pod IP, then starts gateway
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -1,21 +1,6 @@
-# Dockerfile.controller
-
 FROM python:3.10-slim
 WORKDIR /app
-
-# Copy controller code
 COPY src/controller.py .
-
-# Copy requirements and all relevant directories for runtime access
-COPY configs/requirements.txt ./configs/requirements.txt
-COPY certs/ certs/
-COPY configs/ configs/
-
-# Install dependencies
-RUN pip install --no-cache-dir -r ./configs/requirements.txt
-
-# Expose controller port
+RUN pip install --no-cache-dir flask cryptography
 EXPOSE 8080
-
-# Run the controller Flask API
 CMD ["python3", "controller.py"]

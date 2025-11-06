@@ -1,19 +1,12 @@
-# Dockerfile.client
-
 FROM python:3.10-slim
+
 WORKDIR /app
 
 # Copy client code
 COPY src/client.py .
 
-# Copy requirements and runtime data
-COPY configs/requirements.txt ./configs/requirements.txt
-COPY certs/ certs/
-COPY data/ data/
-COPY configs/ configs/
+# Install Python dependencies
+RUN pip install --no-cache-dir requests cryptography urllib3
 
-# Install dependencies
-RUN pip install --no-cache-dir -r ./configs/requirements.txt
-
-# Run the client (adjust as needed for SPA register, test, etc)
+# Run client
 CMD ["python3", "client.py"]

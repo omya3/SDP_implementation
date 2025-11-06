@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: client-register
+spec:
+  template:
+    spec:
+      containers:
+      - name: client
+        image: sdp-client:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "client.py", "register"]
+        volumeMounts:
+        - name: certs
+          mountPath: /app/certs
+        - name: data
+          mountPath: /app/data
+        - name: configs
+          mountPath: /app/configs
+      restartPolicy: Never
+      volumes:
+      - name: certs
+        hostPath:
+          path: /Users/sailor_omkar/Codes/SDP_implementation/certs
+      - name: data
+        hostPath:
+          path: /Users/sailor_omkar/Codes/SDP_implementation/data
+      - name: configs
+        hostPath:
+          path: /Users/sailor_omkar/Codes/SDP_implementation/configs

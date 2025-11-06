@@ -1,159 +1,221 @@
 import hashlib
 import hmac
-import socket
-import ssl
-import struct
-import sys
-import time
 import os
+import socket
+import struct
+import time
 import requests
 import csv
+import random
+import urllib3
+import logging
 
-# --- Directory Structure Awareness ---
-base_dir = os.path.dirname(os.path.abspath(__file__))
-certs_dir = os.path.join(base_dir, '../certs')
-data_dir = os.path.join(base_dir, '../data')
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-for d in [certs_dir, data_dir]:
-    if not os.path.exists(d):
-        os.makedirs(d)
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [CLIENT] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
-CONTROLLER_HOST = 'localhost'
+data_dir = "/app/data"
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
+
+CONTROLLER_HOST = 'sdp-controller'
 CONTROLLER_PORT = 8080
-GATEWAY_HOST = 'localhost'
+GATEWAY_SERVICE = 'sdp-gateway'
 UDP_PORT = 5005
 SPA_ACK_PORT = 6000
+SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 600))  # 10 minutes
+
+logger.info("Protocol Specification:")
+logger.info("  ✅ HTTPS to Controller (self-signed, unverified)")
+logger.info("  ✅ UDP SPA packet (unencrypted, HMAC-signed)")
+logger.info("  ✅ HTTP to Gateway (no TLS)")
+logger.info(f"  ✅ SESSION_TIMEOUT: {SESSION_TIMEOUT} seconds")
+
+def registration_files_exist():
+    return (
+        os.path.exists(os.path.join(data_dir, 'spa_key.bin')) and
+        os.path.exists(os.path.join(data_dir, 'service_id.bin'))
+    )
 
 def register(username):
-    resp = requests.post(
-        f'http://{CONTROLLER_HOST}:{CONTROLLER_PORT}/register',
-        json={'username': username}).json()
-    with open(os.path.join(data_dir, 'spa_key.bin'), 'wb') as f:
-        f.write(bytes.fromhex(resp['spa_key']))
-    with open(os.path.join(data_dir, 'service_id.bin'), 'wb') as f:
-        f.write(bytes.fromhex(resp['service_id']))
-    with open(os.path.join(certs_dir, 'client_public.pem'), 'w') as f:
-        f.write(resp['cert'])
-    print("[CLIENT] Registered and saved keys/certs for username:", username)
-    print("[CLIENT] SPA Key (hex):", resp['spa_key'])
-    print("[CLIENT] Service ID (hex):", resp['service_id'])
+    """Register with controller and get SPA credentials"""
+    try:
+        resp = requests.post(
+            f'https://{CONTROLLER_HOST}:{CONTROLLER_PORT}/register',
+            json={'username': username},
+            verify=False,
+            timeout=5
+        ).json()
+        
+        with open(os.path.join(data_dir, 'spa_key.bin'), 'wb') as f:
+            f.write(bytes.fromhex(resp['spa_key']))
+        
+        with open(os.path.join(data_dir, 'service_id.bin'), 'wb') as f:
+            f.write(bytes.fromhex(resp['service_id']))
+        
+        logger.info(f"Registered: {username}")
+        logger.info(f"SPA Key: {resp['spa_key'][:16]}...")
+        logger.info(f"Service ID: {resp['service_id'][:16]}...")
+    except Exception as e:
+        logger.error(f"Registration failed: {e}")
+        raise
 
 def wait_until_key_synced(username, timeout=20):
-    print(f"[CLIENT] Waiting for gateway/SPA key sync for username: {username}...")
+    """Wait for controller to sync SPA keys to gateway"""
+    logger.info(f"Waiting for gateway key sync ({timeout}s)...")
     for i in range(timeout):
         try:
-            resp = requests.get(f'http://{CONTROLLER_HOST}:{CONTROLLER_PORT}/api/authorized_spa_keys', timeout=2)
+            resp = requests.get(
+                f'https://{CONTROLLER_HOST}:{CONTROLLER_PORT}/api/authorized_spa_keys', 
+                timeout=2,
+                verify=False
+            )
             users = resp.json()
             if username in users:
-                print(f"[CLIENT] Username {username} is now authorized in gateway.")
+                logger.info(f"✅ Username {username} is now authorized!")
                 return True
-            else:
-                print(f"[CLIENT] Not yet authorized ({i}) ... retrying ...")
         except Exception as e:
-            print("[CLIENT] Key sync check error:", e)
+            logger.debug(f"Sync check attempt {i+1} failed: {e}")
+            pass
         time.sleep(1)
-    print(f"[CLIENT] SPA key for {username} never appeared in authorized list (timeout)!")
+    logger.error(f"Timeout: SPA key never appeared in gateway!")
     return False
 
 def send_spa(username):
-    client_id = username.encode()
-    nonce = os.urandom(8)
-    timestamp = int(time.time())
-    service_id = open(os.path.join(data_dir, 'service_id.bin'), 'rb').read()
-    spa_key = open(os.path.join(data_dir, 'spa_key.bin'), 'rb').read()
-    msg = client_id + nonce + struct.pack(">I", timestamp) + service_id
-    hmac_val = hmac.new(spa_key, msg, hashlib.sha256).digest()
-    packet = msg + hmac_val
-    print("\n[CLIENT] --- SENDING SPA PACKET ---")
-    print(f"[CLIENT] username: {username}")
-    print(f"[CLIENT] client_id (hex): {client_id.hex()} (len={len(client_id)})")
-    print(f"[CLIENT] nonce (hex): {nonce.hex()}")
-    print(f"[CLIENT] timestamp: {timestamp}")
-    print(f"[CLIENT] service_id (hex): {service_id.hex()}")
-    print(f"[CLIENT] Full msg (hex): {msg.hex()}")
-    print(f"[CLIENT] spa_key (hex): {spa_key.hex()}")
-    print(f"[CLIENT] hmac_val (hex): {hmac_val.hex()}")
-    print(f"[CLIENT] full packet (hex): {packet.hex()}")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(packet, (GATEWAY_HOST, UDP_PORT))
-    print(f"[CLIENT] Sent SPA packet to {GATEWAY_HOST}:{UDP_PORT}")
+    """Send SPA packet to gateway"""
+    try:
+        client_id = username.encode()
+        nonce = os.urandom(8)
+        timestamp = int(time.time())
+        service_id_path = os.path.join(data_dir, 'service_id.bin')
+        spa_key_path = os.path.join(data_dir, 'spa_key.bin')
+        
+        if not os.path.exists(service_id_path) or not os.path.exists(spa_key_path):
+            logger.error("Missing registration files!")
+            return
+        
+        service_id = open(service_id_path, 'rb').read()
+        spa_key = open(spa_key_path, 'rb').read()
+        msg = client_id + nonce + struct.pack(">I", timestamp) + service_id
+        hmac_val = hmac.new(spa_key, msg, hashlib.sha256).digest()
+        packet = msg + hmac_val
+        
+        logger.info(f"Sending UDP SPA packet to {GATEWAY_SERVICE}:{UDP_PORT}...")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.sendto(packet, (GATEWAY_SERVICE, UDP_PORT))
+        logger.info(f"✅ SPA sent!")
+    except Exception as e:
+        logger.error(f"Failed to send SPA: {e}")
+        raise
 
 def wait_for_spa_ack():
+    """Wait for gateway ACK response"""
     ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         ack_sock.bind(('0.0.0.0', SPA_ACK_PORT))
     except Exception as e:
-        print(f"[CLIENT] Failed to bind UDP port {SPA_ACK_PORT} for ACK:", e)
-        return None, None
+        logger.error(f"Failed to bind ACK port: {e}")
+        return None, None, None
     ack_sock.settimeout(10)
-    print(f"[CLIENT] Listening for SPA_ACK on UDP {SPA_ACK_PORT} ...")
+    logger.info(f"Waiting for SPA_ACK on UDP {SPA_ACK_PORT}...")
     try:
         data, addr = ack_sock.recvfrom(1024)
         msg = data.decode(errors="ignore")
-        print(f"[CLIENT] Received {len(data)} bytes from {addr}: {msg}")
+        logger.info(f"✅ Received ACK: {msg}")
         if msg.startswith('SPA_ACCEPTED:'):
             fields = msg.split(':')
-            if len(fields) == 3:
-                return fields[1], int(fields[2])  # session_id, tls_port
-            else:
-                return fields[1], None
-        else:
-            print("[CLIENT] SPA rejected or unknown response")
-            return None, None
+            if len(fields) >= 4:
+                return fields[1], int(fields[2]), fields[3]
     except socket.timeout:
-        print("[CLIENT] Timeout waiting for SPA_ACK (no packet received).")
-        return None, None
+        logger.error("Timeout waiting for ACK!")
     finally:
         ack_sock.close()
+    return None, None, None
 
-def access_service_latency(username):
-    SESSION_TIMEOUT = 60  # Sync with gateway setting
+def access_service(username):
+    """Main load test: send requests and measure latency"""
     if not wait_until_key_synced(username):
-        print("[CLIENT] SPA key not present in gateway – aborting test.")
+        logger.error("Aborting!")
         return
+    
     send_spa(username)
-    session_id, tls_port = wait_for_spa_ack()
-    if tls_port is None:
-        print("[CLIENT] No port indicated in SPA_ACK. Aborting.")
+    session_id, http_port, gateway_pod_ip = wait_for_spa_ack()
+    
+    if http_port is None:
+        logger.error("No port in ACK!")
         return
-    print(f"[CLIENT] Session ID received: {session_id}, connecting to port: {tls_port}")
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    context = ssl.create_default_context()
-    context.load_verify_locations(cafile=os.path.join(certs_dir, "ca_cert.pem"))
-    certfile = os.path.join(certs_dir, f"{username}_cert.pem")
-    keyfile = os.path.join(certs_dir, f"{username}_private.pem")
-    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-    ssl_sock = context.wrap_socket(s, server_hostname=GATEWAY_HOST)
-    ssl_sock.connect((GATEWAY_HOST, tls_port))
-    req = b"GET /api/data HTTP/1.1\r\nHost: localhost\r\n\r\n"
-    print(f"[CLIENT] Sending as many requests as possible during SPA session (timeout {SESSION_TIMEOUT}s)...")
-    latencies = []
-    count = 0
-    with open(os.path.join(data_dir, "latency_samples.csv"), "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["request_num", "latency_ms"])
+    
+    logger.info(f"Connecting to {gateway_pod_ip}:{http_port} (HTTP)...")
+    results = []
+    start_time_window = time.time()
+    request_count = 0
+    
+    while time.time() - start_time_window < SESSION_TIMEOUT:
         try:
-            while True:
-                start = time.time()
-                ssl_sock.send(req)
-                resp = ssl_sock.recv(4096)
-                end = time.time()
-                ms = (end - start) * 1000
-                latencies.append(ms)
-                count += 1
-                print(f"[CLIENT] Request {count} latency: {ms:.2f} ms")
-                writer.writerow([count, ms])
-                time.sleep(0.01)
+            request_count += 1
+            request_start = time.perf_counter()  # High precision timer
+            
+            sock = socket.create_connection((gateway_pod_ip, http_port), timeout=5)
+            
+            req = b"GET /api/data HTTP/1.1\r\nHost: sdp-resource\r\nConnection: close\r\n\r\n"
+            sock.send(req)
+            resp = sock.recv(4096).decode(errors='ignore')
+            
+            request_end = time.perf_counter()  # High precision timer
+            latency_ms = (request_end - request_start) * 1000
+            
+            results.append(latency_ms)
+            logger.debug(f"Request #{request_count}: {latency_ms:.2f} ms")
+            sock.close()
+            
         except Exception as e:
-            print("[CLIENT] Connection closed or error after", count, "requests:", e)
-    ssl_sock.close()
-    if latencies:
-        print(f"[CLIENT] Average latency: {sum(latencies)/len(latencies):.2f} ms over {len(latencies)} requests")
-        print(f"[CLIENT] All per-request latencies written to latency_samples.csv")
+            logger.warning(f"Request #{request_count} failed: {e}")
+            results.append(None)
+        
+        time.sleep(0.3 + random.expovariate(1/0.5))  # Real-world traffic pattern
+    
+    # Statistics
+    valid_latencies = [l for l in results if l is not None]
+    failed_count = len(results) - len(valid_latencies)
+    
+    if valid_latencies:
+        avg = sum(valid_latencies) / len(valid_latencies)
+        std_dev = (sum((x - avg) ** 2 for x in valid_latencies) / len(valid_latencies)) ** 0.5
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"[Load Test Statistics] - SESSION_TIMEOUT: {SESSION_TIMEOUT}s")
+        logger.info(f"{'='*60}")
+        logger.info(f"Total Requests:    {len(results)}")
+        logger.info(f"Successful:        {len(valid_latencies)}")
+        logger.info(f"Failed:            {failed_count} ({100*failed_count/len(results):.1f}%)")
+        logger.info(f"Min latency:       {min(valid_latencies):.2f} ms")
+        logger.info(f"Max latency:       {max(valid_latencies):.2f} ms")
+        logger.info(f"Average:           {avg:.2f} ms")
+        logger.info(f"Std Deviation:     {std_dev:.2f} ms")
+        logger.info(f"{'='*60}\n")
+    else:
+        logger.error("No valid latency measurements!")
+    
+    # CSV output
+    csv_path = os.path.join(data_dir, "spa_latency.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["request#", "latency_ms", "success"])
+        for i, r in enumerate(results):
+            success = "yes" if r is not None else "no"
+            writer.writerow([i+1, f"{r:.2f}" if r is not None else "fail", success])
+    logger.info(f"Latency results saved in {csv_path}")
 
 if __name__ == "__main__":
     username = 'aliceIH'
-    if len(sys.argv) > 1 and sys.argv[1] == "register":
+    if not registration_files_exist():
+        logger.info("Registering...")
         register(username)
-    else:
-        access_service_latency(username)
+        time.sleep(2)
+    access_service(username)
