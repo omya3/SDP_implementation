@@ -27,7 +27,7 @@ UDP_PORT = 5005
 SPA_ACK_PORT = 6000
 RESOURCE_HOST = 'sdp-resource'
 RESOURCE_PORT = 8100
-SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 600))  # 10 minutes
+SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 3000))  # 10 minutes
 CONTROLLER_URL = 'https://sdp-controller:8080'
 AUTHORIZED_SPAS = {}
 

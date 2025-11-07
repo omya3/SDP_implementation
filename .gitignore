@@ -1,6 +1,6 @@
 # Virtual environments
 sdp_env/
-venv/
+.venv/
 .env
 
 # Private keys and certs

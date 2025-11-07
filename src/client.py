@@ -29,7 +29,7 @@ CONTROLLER_PORT = 8080
 GATEWAY_SERVICE = 'sdp-gateway'
 UDP_PORT = 5005
 SPA_ACK_PORT = 6000
-SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 600))  # 10 minutes
+SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 3000))  # 10 minutes
 
 logger.info("Protocol Specification:")
 logger.info("  ✅ HTTPS to Controller (self-signed, unverified)")
@@ -178,7 +178,7 @@ def access_service(username):
             logger.warning(f"Request #{request_count} failed: {e}")
             results.append(None)
         
-        time.sleep(0.3 + random.expovariate(1/0.5))  # Real-world traffic pattern
+        time.sleep(0.3 + random.expovariate(1/0.2))  # Real-world traffic pattern
     
     # Statistics
     valid_latencies = [l for l in results if l is not None]
