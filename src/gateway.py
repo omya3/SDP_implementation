@@ -1,3 +1,4 @@
+# gateway.py
 import hashlib
 import hmac
 import secrets
@@ -11,6 +12,7 @@ import sys
 import traceback
 import urllib3
 import logging
+import ssl  # NEW
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -31,9 +33,16 @@ SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 3000))  # 10 minutes
 CONTROLLER_URL = 'https://sdp-controller:8080'
 AUTHORIZED_SPAS = {}
 
+# NEW: TLS flags & paths (env-configurable)
+GATEWAY_TLS_ENABLED = os.environ.get('GATEWAY_TLS_ENABLED', 'true').lower() == 'true'
+GATEWAY_MTLS_ENABLED = os.environ.get('GATEWAY_MTLS_ENABLED', 'false').lower() == 'true'
+GATEWAY_TLS_CERT = os.environ.get('GATEWAY_TLS_CERT', '/app/tls/gw_cert.pem')
+GATEWAY_TLS_KEY  = os.environ.get('GATEWAY_TLS_KEY',  '/app/tls/gw_key.pem')
+GATEWAY_CA_CERT  = os.environ.get('GATEWAY_CA_CERT',  '/app/tls/ca_cert.pem')
+
 logger.info("Protocol Specification:")
 logger.info("  ✅ UDP SPA packet (unencrypted, HMAC-signed)")
-logger.info("  ✅ HTTP proxy tunnel to clients (no TLS)")
+logger.info(f"  ✅ Client↔Gateway: {'TLS' if GATEWAY_TLS_ENABLED else 'PLAINTEXT'}{' with mTLS' if GATEWAY_MTLS_ENABLED else ''}")
 logger.info("  ✅ HTTPS to Controller (self-signed, unverified)")
 logger.info("  ✅ HTTP to Resource (internal only)")
 logger.info(f"  ✅ SESSION_TIMEOUT: {SESSION_TIMEOUT} seconds")
@@ -74,8 +83,10 @@ def tcp_forward(client_sock, resource_host, resource_port, valid_until):
                 except Exception: pass
                 try: dest.shutdown(socket.SHUT_RDWR)
                 except Exception: pass
-                source.close()
-                dest.close()
+                try: source.close()
+                except Exception: pass
+                try: dest.close()
+                except Exception: pass
         
         def session_timeout_killer():
             time.sleep(max(0, valid_until - time.time()))
@@ -83,8 +94,14 @@ def tcp_forward(client_sock, resource_host, resource_port, valid_until):
             except Exception: pass
             try: backend_sock.shutdown(socket.SHUT_RDWR)
             except Exception: pass
-            if client_sock: client_sock.close()
-            if backend_sock: backend_sock.close()
+            try:
+                client_sock.close()
+            except Exception:
+                pass
+            try:
+                backend_sock.close()
+            except Exception:
+                pass
         
         threading.Thread(target=tunnel, args=(client_sock, backend_sock, "c2b"), daemon=True).start()
         threading.Thread(target=tunnel, args=(backend_sock, client_sock, "b2c"), daemon=True).start()
@@ -95,23 +112,25 @@ def tcp_forward(client_sock, resource_host, resource_port, valid_until):
         if client_sock:
             try: client_sock.shutdown(socket.SHUT_RDWR)
             except Exception: pass
-            client_sock.close()
+            try: client_sock.close()
+            except Exception: pass
         if backend_sock:
             try: backend_sock.shutdown(socket.SHUT_RDWR)
             except Exception: pass
-            backend_sock.close()
+            try: backend_sock.close()
+            except Exception: pass
 
 def start_http_proxy_server(session_id, valid_until, port_ready_event, port_holder):
-    """HTTP proxy tunnel to client (no TLS)"""
+    """Client-facing listener (TLS optional). Forwards plaintext to RESOURCE."""
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind(('0.0.0.0', 0))
     _, http_port = server_sock.getsockname()
-    server_sock.listen(1)
+    server_sock.listen(10)
     port_holder['port'] = http_port
     port_ready_event.set()
     
-    logger.info(f"HTTP proxy for session {session_id} listening on port {http_port}")
+    logger.info(f"{'TLS' if GATEWAY_TLS_ENABLED else 'HTTP'} proxy for session {session_id} listening on port {http_port}")
     
     accept_deadline = valid_until
     while time.time() < accept_deadline:
@@ -121,8 +140,33 @@ def start_http_proxy_server(session_id, valid_until, port_ready_event, port_hold
             
             try:
                 client_sock, addr = server_sock.accept()
-                logger.info(f"Accepted HTTP connection from {addr}")
-                threading.Thread(target=tcp_forward, args=(client_sock, RESOURCE_HOST, RESOURCE_PORT, valid_until), daemon=True).start()
+
+                # === NEW: Wrap with TLS if enabled ===
+                wrapped_client = client_sock
+                if GATEWAY_TLS_ENABLED:
+                    try:
+                        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                        ctx.load_cert_chain(certfile=GATEWAY_TLS_CERT, keyfile=GATEWAY_TLS_KEY)
+                        if GATEWAY_MTLS_ENABLED:
+                            ctx.verify_mode = ssl.CERT_REQUIRED
+                            ctx.load_verify_locations(cafile=GATEWAY_CA_CERT)
+                        wrapped_client = ctx.wrap_socket(client_sock, server_side=True)
+                        logger.info(f"Accepted TLS{' (mTLS)' if GATEWAY_MTLS_ENABLED else ''} connection from {addr}")
+                    except Exception as e:
+                        logger.error(f"TLS handshake failed from {addr}: {e}")
+                        try: client_sock.close()
+                        except Exception: pass
+                        continue
+                else:
+                    logger.info(f"Accepted PLAINTEXT connection from {addr}")
+                # =====================================
+
+                threading.Thread(
+                    target=tcp_forward,
+                    args=(wrapped_client, RESOURCE_HOST, RESOURCE_PORT, valid_until),
+                    daemon=True
+                ).start()
             except socket.timeout:
                 continue
             except Exception as e:
@@ -188,7 +232,7 @@ def spa_listener():
                 ack_sock.sendto(ack_msg.encode(), (client_ip, SPA_ACK_PORT))
                 ack_sock.close()
                 
-                logger.info(f"[ACCEPT] Valid SPA from {client_ip} (user: {client_id}), session {session_id}, HTTP port {http_port}")
+                logger.info(f"[ACCEPT] Valid SPA from {client_ip} (user: {client_id}), session {session_id}, port {http_port}")
             else:
                 logger.warning(f"[REJECT] Invalid SPA from {client_ip} (hmac or timestamp mismatch)")
         

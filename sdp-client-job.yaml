@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sdp-load-test
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: sdp-load-client
+        image: sdp-load-client:v3
+        imagePullPolicy: IfNotPresent
+        
+        env:
+        - name: CONTROLLER_HOST
+          value: "sdp-controller"
+        - name: CONTROLLER_PORT
+          value: "8080"
+        - name: GATEWAY_SERVICE
+          value: "sdp-gateway"
+        - name: UDP_PORT
+          value: "5005"
+        - name: SPA_ACK_PORT
+          value: "6000"
+        - name: RESOURCE_PATH
+          value: "/api/data"
+        - name: DATA_DIR
+          value: "/app/data"
+        - name: SESSION_TIMEOUT
+          value: "3000"
+
+        command: ["python3", "/app/client.py"]
+        args:
+          ["--username", "aliceIH",
+           "--rps", "75",
+           "--duration", "240",
+           "--concurrency", "8",
+           "--timeout", "2.0",
+           "--csv", "/app/data/spa_latency.csv"]
+
+        volumeMounts:
+        - name: client-data
+          mountPath: /app/data
+
+      volumes:
+      - name: client-data
+        emptyDir: {}

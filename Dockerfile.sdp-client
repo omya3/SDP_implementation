@@ -1,0 +1,11 @@
+# Dockerfile.sdp-client
+FROM python:3.10-slim
+WORKDIR /app
+
+COPY src/sdp-load-client.py /app/client.py
+
+RUN pip install --no-cache-dir requests urllib3
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "/app/client.py"]

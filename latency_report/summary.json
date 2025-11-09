@@ -1,0 +1,26 @@
+{
+  "total_requests": 5962,
+  "successful": 5962,
+  "failed": 0,
+  "success_rate_pct": 100.0,
+  "latency_ms": {
+    "min": 2.81,
+    "p50": 4.55,
+    "p90": 4.96,
+    "p95": 5.23,
+    "p99": 5.764,
+    "max": 76.18,
+    "avg": 4.646,
+    "median": 4.55,
+    "stddev": 0.983,
+    "cv": 0.211551,
+    "jitter_stddev": 1.380702,
+    "iqr_q1": 4.48,
+    "iqr_q3": 4.69,
+    "iqr": 0.21,
+    "outliers_gt_q3_plus_1p5iqr": 538
+  },
+  "duration_seconds": 3000.0,
+  "throughput_rps_total": 1.987,
+  "throughput_rps_success": 1.987
+}

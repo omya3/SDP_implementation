@@ -1,3 +1,4 @@
+# gateway yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,6 +25,22 @@ spec:
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
+        # === NEW: TLS flags and paths ===
+        - name: GATEWAY_TLS_ENABLED
+          value: "true"             # enable TLS on client-facing socket
+        - name: GATEWAY_MTLS_ENABLED
+          value: "false"            # set to "true" if you want mTLS
+        - name: GATEWAY_TLS_CERT
+          value: "/app/tls/gw_cert.pem"
+        - name: GATEWAY_TLS_KEY
+          value: "/app/tls/gw_key.pem"
+        - name: GATEWAY_CA_CERT
+          value: "/app/tls/ca_cert.pem"
+        # ================================
+        volumeMounts:
+        - name: tls
+          mountPath: /app/tls
+          readOnly: true
         resources:
           requests:
             cpu: "0.5"
@@ -31,6 +48,10 @@ spec:
           limits:
             cpu: "2"
             memory: "2Gi"
+      volumes:
+      - name: tls
+        secret:
+          secretName: sdp-gateway-tls
 ---
 apiVersion: v1
 kind: Service

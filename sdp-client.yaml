@@ -1,3 +1,4 @@
+# client yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +23,7 @@ spec:
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
+        # No TLS mounts needed for verify=False
         resources:
           requests:
             cpu: "0.5"
