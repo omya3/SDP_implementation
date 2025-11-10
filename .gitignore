@@ -36,4 +36,4 @@ dist/
 # Editor / OS files
 .vscode/
 .DS_Store
-*.swp
+*.swplatency_stats/

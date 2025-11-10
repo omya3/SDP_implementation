@@ -11,7 +11,7 @@ spec:
       - name: sdp-load-client
         image: sdp-load-client:v3
         imagePullPolicy: IfNotPresent
-        
+
         env:
         - name: CONTROLLER_HOST
           value: "sdp-controller"
@@ -30,18 +30,22 @@ spec:
         - name: SESSION_TIMEOUT
           value: "3000"
 
-        command: ["python3", "/app/client.py"]
-        args:
-          ["--username", "aliceIH",
-           "--rps", "75",
-           "--duration", "240",
-           "--concurrency", "8",
-           "--timeout", "2.0",
-           "--csv", "/app/data/spa_latency.csv"]
-
         volumeMounts:
         - name: client-data
           mountPath: /app/data
+
+        command: ["/bin/sh", "-lc"]
+        args:
+          - >
+            python3 /app/client.py
+            --username aliceIH
+            --rps 75
+            --duration 240
+            --concurrency 8
+            --timeout 2.0
+            --csv /app/data/spa_latency.csv
+            && echo "client finished, holding pod for copy"
+            && sleep 3600
 
       volumes:
       - name: client-data
